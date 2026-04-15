@@ -1,0 +1,152 @@
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:virt
+      frag: liquid-fs:frag
+      depthStencilState: { depthTest: false, depthWrite: false }
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState: { cullMode: none }
+      properties:
+        alphaThreshold: { value: 0.5 }
+        mainTexture:    { value: white }
+        color1: { value: [1, 1, 1, 1], editor: { type: color } }
+        color2: { value: [1, 1, 1, 1], editor: { type: color } }
+        color3: { value: [1, 1, 1, 1], editor: { type: color } }
+        color4: { value: [1, 1, 1, 1], editor: { type: color } }
+        activeLayers: { value: 4.0 }
+        totalFillLevel: { value: 0.8, editor: { range: [0, 1] } }
+        liquidBottom:   { value: 0.0, editor: { range: [0, 1] } }
+        liquidTop:      { value: 0.8, editor: { range: [0, 1] } }
+        waveHeight:     { value: 0.02, editor: { range: [0, 0.1] } }
+        waveSpeed:      { value: 5.0 }
+        rotation:       { value: 0.0 }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <cc-global>
+  #if USE_LOCAL
+    #include <cc-local>
+  #endif
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+  out vec2 v_uv;
+  out vec4 v_color;
+  vec4 virt () {
+    vec4 pos = vec4(a_position, 1);
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+    pos = cc_matViewProj * pos;
+    v_uv = a_texCoord;
+    v_color = a_color;
+    return pos;
+  }
+}%
+
+CCProgram liquid-fs %{
+  precision highp float;
+  #include <cc-global>
+
+  in vec2 v_uv;
+  in vec4 v_color;
+
+  #if USE_TEXTURE
+    uniform sampler2D mainTexture;
+  #endif
+
+  uniform Constant {
+    vec4 color1;
+    vec4 color2;
+    vec4 color3;
+    vec4 color4;
+    float totalFillLevel;
+    float activeLayers;
+    float liquidBottom;
+    float liquidTop;
+    float waveHeight;
+    float waveSpeed;
+    float rotation;
+    float alphaThreshold;
+  };
+
+  vec4 frag () {
+    vec4 o = v_color;
+
+    #if USE_TEXTURE
+      vec4 texColor = texture(mainTexture, v_uv);
+      // 形状裁剪逻辑
+      if (texColor.a < alphaThreshold) discard;
+      o.a *= texColor.a;
+    #endif
+
+    // 空瓶兜底：逻辑层数为 0 或填充比例接近 0 时，直接不渲染液体
+    if (activeLayers < 0.5 || totalFillLevel <= 0.001) {
+      discard;
+    }
+
+    float minFill = clamp(liquidBottom, 0.0, 1.0);
+    float maxFill = clamp(liquidTop, minFill + 0.001, 1.0);
+    // 把逻辑填充比例映射到可见液体区域（用于避开瓶口）
+    float displayFill = mix(minFill, maxFill, clamp(totalFillLevel, 0.0, 1.0));
+
+    // --- 坐标系对齐 ---
+    // 当前资源的 uv.y 方向是反的（顶部=0，底部=1），
+    // 先翻转成我们期望的“底部=0，顶部=1”，避免出现倒灌效果。
+    vec2 fixedUV = vec2(v_uv.x, 1.0 - v_uv.y);
+
+    // --- 物理绝对边界裁剪 ---
+    // 无论瓶子怎么倾斜，水绝对不允许画到瓶身之上（进入瓶口）或瓶底之下
+    if (fixedUV.y > maxFill || fixedUV.y < minFill) {
+        discard;
+    }
+
+    vec2 uv = fixedUV - vec2(0.5);
+    float cosR = cos(rotation);
+    float sinR = sin(rotation);
+    
+    // 高度计算
+    float rotatedY = (uv.x * sinR + uv.y * cosR) + 0.5;
+
+    // 波浪计算
+    float time = cc_time.x * waveSpeed;
+    float wave = sin((uv.x * cosR - uv.y * sinR) * 15.0 + time) * waveHeight;
+
+    // --- 顶部裁剪逻辑 ---
+    // 像切蛋糕一样，水位下降到哪，就切到哪
+    if (rotatedY > displayFill + wave) {
+        discard;
+    }
+
+    // ==========================================
+    // --- 终极修正：颜色层级绝对对齐 ---
+    // ==========================================
+    // ratio 代表当前像素在【整个瓶子最大容量】中的绝对高度比例 (0.0 到 1.0)
+    // 关键修复点：分母用 maxFill 替代 displayFill，锁定颜色分界线！
+    float ratio = clamp((rotatedY - minFill) / max(maxFill - minFill, 0.001), 0.0, 1.0);
+    
+    // 瓶子固定容量为 4 层，把空间绝对平分为 4 份
+    float maxLayers = 4.0; 
+    float layerIndex = floor(ratio * maxLayers);
+    
+    // 边界保险：防止最高层溢出
+    if (layerIndex >= maxLayers) layerIndex = maxLayers - 1.0;
+
+    vec4 waterColor;
+    if (layerIndex < 1.0) waterColor = color1;
+    else if (layerIndex < 2.0) waterColor = color2;
+    else if (layerIndex < 3.0) waterColor = color3;
+    else waterColor = color4;
+
+    o.rgb *= waterColor.rgb;
+    o.a *= waterColor.a;
+
+    return o;
+  }
+}%
