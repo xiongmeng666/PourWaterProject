@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Button, Color, Vec3, v3, Prefab, instantiate, Sprite, UITransform, tween } from 'cc';
+import { _decorator, Component, Node, Button, Color, Vec3, v3, Prefab, instantiate, Sprite, UITransform, tween, Tween } from 'cc';
 import { IGameView } from './IGameView';
 import { GamePresenter } from '../presenter/GamePresenter';
 import { BottleView } from './BottleView';
@@ -414,5 +414,50 @@ export class GameView extends Component implements IGameView {
         const ui = this.node.getComponent(UITransform);
         if (!ui) return worldPos.clone();
         return ui.convertToNodeSpaceAR(worldPos);
+    }
+
+    /**
+     * 组件销毁前调用
+     */
+    onDestroy() {
+        // 1. 【停止所有 Tween】
+        // 必须针对所有可能在播放动画的节点执行停止操作，防止销毁后回调依然触发
+        this.bottles.forEach(bottle => {
+            if (bottle && bottle.node) {
+                Tween.stopAllByTarget(bottle.node); // 停止瓶子自身的跳起、复位、消除动画
+            }
+        });
+
+        // 如果当前有正在流动的细流，也需要停止并清理
+        if (this._activeStream) {
+            Tween.stopAllByTarget(this._activeStream);
+            this._activeStream.destroy();
+            this._activeStream = null;
+        }
+
+        // 2. 【清理所有定时器】
+        // 清除通过 this.schedule 开启的所有任务，防止延迟逻辑（如 showWinPanel）在销毁后执行
+        this.unscheduleAllCallbacks();
+
+        // 3. 【解绑事件与断开闭包】
+        this.bottles.forEach(bottle => {
+            if (bottle.node && bottle.node.isValid) {
+                bottle.node.off(Node.EventType.TOUCH_END);
+            }
+        });
+
+        // 断开 WinPanel 的闭包回调，这是最容易产生闭包引用导致内存不释放的地方
+        if (this.winPanel) {
+            this.winPanel.onNextLevelCallback = null; 
+            if (this.winPanel.contentNode) {
+                Tween.stopAllByTarget(this.winPanel.contentNode);
+            }
+        }
+
+        // 4. 【通知中枢下线】
+        if (this._presenter) {
+            this._presenter.reset();
+            this._presenter = null!;
+        }
     }
 }

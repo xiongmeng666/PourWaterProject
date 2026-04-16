@@ -1,6 +1,14 @@
 import { IGameView } from '../view/IGameView';
 import { GameModel } from '../model/GameModel';
 
+/**
+ * 游戏业务逻辑中枢
+ * * 【核心职责】
+ * 1. 架构桥梁：作为 View(表现) 和 Model(数据) 之间唯一的沟通枢纽，彻底解耦视图与数据。
+ * 2. 流程控制：接收 View 层转发的用户交互（如点击瓶子、点击撤回等），根据 Model 的规则进行校验。
+ * 3. 状态调度：修改 Model 数据后，指挥 View 层通过 IGameView 接口播放对应的表现动画。
+ * 4. 线程安全（防连点）：维护全局动画锁 (_isAnimating)，确保表现层动画与底层数据严格同步。
+ */
 export class GamePresenter {
     private _view: IGameView;
     private _model: GameModel;
@@ -230,4 +238,24 @@ export class GamePresenter {
         const sStr = s < 10 ? `0${s}` : `${s}`;
         return `${mStr}:${sStr}`;
     }
+
+    /**
+     * 清扫方法
+     * 打断引用链，释放内存，注销可能的全局事件监听
+     */
+    public reset() {
+        // 1. 【状态重置】
+        this._isAnimating = false;
+        this._selectedIdx = -1;
+
+        // 2. 【打断强引用】
+        this._view = null!; 
+        
+        // 3. 【清空大数据量对象】
+        if (this._model) {
+            this._model.clearHistory(); // 释放历史记录栈里的 Color 对象
+            this._model = null!;
+        }
+    }
+
 }
