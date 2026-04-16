@@ -69,12 +69,14 @@ export class BottleView extends Component {
 
         const len = this._waterColors.length;
 
+        // 获取 Shader 支持的最大颜色层数
+        const shaderMaxSupport = GameConfig.ShaderMaxColors;
 
         // 1. 设置颜色层
-        for (let i = 0; i < GameConfig.MaxLayers; i++) {
+        for (let i = 0; i < shaderMaxSupport; i++) {
             const propName = `color${i + 1}`;
-            // 直接按顺序把逻辑颜色塞给 Shader
-            if (i < len) {
+            // 如果超出了当前关卡配置的最大层数，或者超出了当前实际的水层，都填透明
+            if (i < GameConfig.MaxLayers && i < len) {
                 this._mat.setProperty(propName, this._waterColors[i]);
             } else {
                 this._mat.setProperty(propName, new Color(0, 0, 0, 0));
@@ -86,7 +88,8 @@ export class BottleView extends Component {
         this._mat.setProperty('totalFillLevel', fillRate);
         // 告诉 Shader 这一瓶现在到底有几层，用于平分高度
         this._mat.setProperty('activeLayers', len);
-
+        // 把配置里的最大容量同步给 Shader
+        this._mat.setProperty('maxLayers', GameConfig.MaxLayers);
     }
 
     /**

@@ -12,19 +12,28 @@ CCEffect %{
           blendDstAlpha: one_minus_src_alpha
       rasterizerState: { cullMode: none }
       properties:
+        # --- 基础渲染设置 ---
         alphaThreshold: { value: 0.5 }
         mainTexture:    { value: white }
+        # --- 液体颜色 (由下至上 1-4层) 注意：5-8层是预留的层数 为了方便动态修改瓶里的层数而不需要改成到本脚本
         color1: { value: [1, 1, 1, 1], editor: { type: color } }
         color2: { value: [1, 1, 1, 1], editor: { type: color } }
         color3: { value: [1, 1, 1, 1], editor: { type: color } }
         color4: { value: [1, 1, 1, 1], editor: { type: color } }
-        activeLayers: { value: 4.0 }
-        totalFillLevel: { value: 0.8, editor: { range: [0, 1] } }
-        liquidBottom:   { value: 0.0, editor: { range: [0, 1] } }
-        liquidTop:      { value: 0.8, editor: { range: [0, 1] } }
+        color5: { value: [1, 1, 1, 0], editor: { type: color } }
+        color6: { value: [1, 1, 1, 0], editor: { type: color } }
+        color7: { value: [1, 1, 1, 0], editor: { type: color } }
+        color8: { value: [1, 1, 1, 0], editor: { type: color } }
+        # --- 液体状态数据 ---
+        activeLayers:   { value: 4.0 }                               # 当前存在的逻辑水层数 (决定是否是空瓶)
+        maxLayers:      { value: 4.0 }                               # 最大水层数
+        totalFillLevel: { value: 0.8, editor: { range: [0, 1] } }    # 当前总填充百分比
+        liquidBottom:   { value: 0.0, editor: { range: [0, 1] } }    # 瓶底物理边界限制
+        liquidTop:      { value: 0.8, editor: { range: [0, 1] } }    # 瓶口物理边界限制
+        # --- 物理表现 (波浪与倾斜) ---
         waveHeight:     { value: 0.02, editor: { range: [0, 0.1] } }
         waveSpeed:      { value: 5.0 }
-        rotation:       { value: 0.0 }
+        rotation:       { value: 0.0 }                               # 瓶身倾斜弧度，用于保持液面水平
 }%
 
 CCProgram sprite-vs %{
@@ -33,11 +42,14 @@ CCProgram sprite-vs %{
   #if USE_LOCAL
     #include <cc-local>
   #endif
+  
   in vec3 a_position;
   in vec2 a_texCoord;
   in vec4 a_color;
+  
   out vec2 v_uv;
   out vec4 v_color;
+  
   vec4 virt () {
     vec4 pos = vec4(a_position, 1);
     #if USE_LOCAL
@@ -66,8 +78,13 @@ CCProgram liquid-fs %{
     vec4 color2;
     vec4 color3;
     vec4 color4;
+    vec4 color5;
+    vec4 color6;
+    vec4 color7;
+    vec4 color8;
     float totalFillLevel;
     float activeLayers;
+    float maxLayers;
     float liquidBottom;
     float liquidTop;
     float waveHeight;
@@ -79,70 +96,75 @@ CCProgram liquid-fs %{
   vec4 frag () {
     vec4 o = v_color;
 
+    // Step 1: 形状遮罩裁剪
+    // 利用贴图的 Alpha 通道勾勒出瓶子内部液体的形状
     #if USE_TEXTURE
       vec4 texColor = texture(mainTexture, v_uv);
-      // 形状裁剪逻辑
       if (texColor.a < alphaThreshold) discard;
       o.a *= texColor.a;
     #endif
 
-    // 空瓶兜底：逻辑层数为 0 或填充比例接近 0 时，直接不渲染液体
+    // Step 2: 空瓶优化拦截
+    // 若逻辑层数为 0 或无填充度，直接丢弃片元，节省渲染性能
     if (activeLayers < 0.5 || totalFillLevel <= 0.001) {
       discard;
     }
 
+    // Step 3: 物理边界映射
+    // 将逻辑填充度 [0, 1] 映射到实际的美术渲染区域 [liquidBottom, liquidTop]
     float minFill = clamp(liquidBottom, 0.0, 1.0);
     float maxFill = clamp(liquidTop, minFill + 0.001, 1.0);
-    // 把逻辑填充比例映射到可见液体区域（用于避开瓶口）
     float displayFill = mix(minFill, maxFill, clamp(totalFillLevel, 0.0, 1.0));
 
-    // --- 坐标系对齐 ---
-    // 当前资源的 uv.y 方向是反的（顶部=0，底部=1），
-    // 先翻转成我们期望的“底部=0，顶部=1”，避免出现倒灌效果。
+    // Step 4: 坐标系修正
+    // Cocos UV 默认原点在左上角 (顶部=0，底部=1)
+    // 此处将其翻转为左下角原点 (底部=0，顶部=1)，使后续高度计算符合物理直觉
     vec2 fixedUV = vec2(v_uv.x, 1.0 - v_uv.y);
 
-    // --- 物理绝对边界裁剪 ---
-    // 无论瓶子怎么倾斜，水绝对不允许画到瓶身之上（进入瓶口）或瓶底之下
+    // Step 5: 绝对物理边界裁剪
+    // 强制限制液体无法溢出瓶口 (maxFill) 或漏出瓶底 (minFill)
     if (fixedUV.y > maxFill || fixedUV.y < minFill) {
         discard;
     }
 
-    vec2 uv = fixedUV - vec2(0.5);
+    // Step 6: 倾斜与波浪运算
+    vec2 uv = fixedUV - vec2(0.5); // 将中心点移至 UV 中心，方便旋转计算
     float cosR = cos(rotation);
     float sinR = sin(rotation);
     
-    // 高度计算
+    // 根据旋转角度计算新的 Y 轴高度，保持液面绝对水平
     float rotatedY = (uv.x * sinR + uv.y * cosR) + 0.5;
 
-    // 波浪计算
+    // 叠加正弦波浪偏移
     float time = cc_time.x * waveSpeed;
     float wave = sin((uv.x * cosR - uv.y * sinR) * 15.0 + time) * waveHeight;
 
-    // --- 顶部裁剪逻辑 ---
-    // 像切蛋糕一样，水位下降到哪，就切到哪
+    // Step 7: 动态液面裁剪
+    // 丢弃所有高于当前物理水位线 (+波浪波动) 的片元
     if (rotatedY > displayFill + wave) {
         discard;
     }
 
-    // ==========================================
-    // --- 终极修正：颜色层级绝对对齐 ---
-    // ==========================================
-    // ratio 代表当前像素在【整个瓶子最大容量】中的绝对高度比例 (0.0 到 1.0)
-    // 关键修复点：分母用 maxFill 替代 displayFill，锁定颜色分界线！
+    // Step 8: 颜色分层映射 (核心)
+    // ratio: 计算当前片元在整个【瓶子最大容量空间】中的绝对高度占比 (0.0 - 1.0)
+    // 注意：分母使用物理最大高度 (maxFill - minFill) 锁定基准，防止倾斜时水层颜色比例错乱
     float ratio = clamp((rotatedY - minFill) / max(maxFill - minFill, 0.001), 0.0, 1.0);
     
-    // 瓶子固定容量为 4 层，把空间绝对平分为 4 份
-    float maxLayers = 4.0; 
     float layerIndex = floor(ratio * maxLayers);
     
-    // 边界保险：防止最高层溢出
+    // 索引防溢出保护
     if (layerIndex >= maxLayers) layerIndex = maxLayers - 1.0;
 
+    // 根据所属层级匹配对应颜色
     vec4 waterColor;
     if (layerIndex < 1.0) waterColor = color1;
     else if (layerIndex < 2.0) waterColor = color2;
     else if (layerIndex < 3.0) waterColor = color3;
-    else waterColor = color4;
+    else if (layerIndex < 4.0) waterColor = color4;
+    else if (layerIndex < 5.0) waterColor = color5;
+    else if (layerIndex < 6.0) waterColor = color6;
+    else if (layerIndex < 7.0) waterColor = color7;
+    else waterColor = color8;
 
     o.rgb *= waterColor.rgb;
     o.a *= waterColor.a;

@@ -5,8 +5,18 @@ import { Color } from 'cc';
  */
 export const GameConfig = {
     // --- 核心规则配置 ---
+
+    /** * Shader 材质最大支持的颜色层数 (显存槽位上限)
+     * 【警告】：由于 WebGL/Shader 是静态编译，数组长度必须在底层写死。
+     * 在 liquid-fs 中预埋了 8 个 vec4 颜色槽位。
+     * 如需要求 MaxLayers 大于 8，必须先去修改 .effect 文件增加变量！
+     */
+    ShaderMaxColors: 8,
     
-    /** 每个瓶子的最大容量（水层数） */
+    /** 
+     * 每个瓶子的最大容量（水层数） 最多支持ShaderMaxColors层 超过ShaderMaxColors层会导致shader报错
+     * 注：如要修改需要同步修改shader_multilayer.effect文件里的最大预设层数
+     */
     MaxLayers: 4,
     
     /** 每次开局默认留给玩家操作的空瓶数量 */
@@ -26,4 +36,6 @@ export const GameConfig = {
         new Color().fromHEX('#E6E6FA'), // 4: 薰衣草紫 Lavender
         new Color().fromHEX('#FFDAB9'), // 5: 蜜桃色 Peach
     ],
+
+    
 };
