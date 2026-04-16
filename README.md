@@ -26,5 +26,8 @@
 * **引擎版本**: Cocos Creator 3.8.8
 * **编程语言**: TypeScript
 
+## 🚀 演示地址 (Live Demo)
+- **📱 手机移动端自适应版本**：[点击预览](https://xiongmeng666.github.io/PourWaterProject/)
+- **💻 桌面浏览器专用版本**：[点击预览](https://xiongmeng666.github.io/PourWaterProject/pc/)
 ---
 *本项目仅供技术交流与面试演示使用。*
